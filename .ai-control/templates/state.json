@@ -1,0 +1,21 @@
+{
+    "run_id": "",
+    "goal": "",
+    "phase": "planning",
+    "owner": "orchestrator",
+    "tasks": [{
+        "id": "TASK-001",
+        "title": "",
+        "status": "todo",
+        "owner": "",
+        "branch": "",
+        "worktree": "",
+        "depends_on": [],
+        "allowed_paths": [],
+        "acceptance": [],
+        "verification": []
+    }],
+    "bugs": [],
+    "last_updated_at": "",
+    "last_updated_by": "orchestrator"
+}
