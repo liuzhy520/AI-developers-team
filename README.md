@@ -2,6 +2,16 @@
 
 A prompt engineering project that implements a **4-role multi-agent orchestration system** for VS Code GitHub Copilot. Four specialized AI agents collaborate through a context-aware workflow with persisted state, compacted memory, and resumable sessions.
 
+---
+
+**Update (2026-04-01):**
+- 项目文档已补充，详细工作流见 docs/workflow-guide.md。
+- 支持多代理协作，所有角色和协议已在 .github/agents/ 与 .github/copilot-instructions.md 明确。
+- 推荐先阅读 Quick Start 部分，了解如何在 VS Code Copilot Chat 中选择不同 agent 模式。
+- 欢迎贡献和反馈。
+
+---
+
 ## Architecture
 
 ```
