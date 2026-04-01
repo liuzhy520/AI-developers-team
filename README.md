@@ -1,6 +1,6 @@
 # AI Developers Team — Multi-Agent Orchestrator for Copilot
 
-A prompt engineering project that implements a **4-role multi-agent orchestration system** for VS Code GitHub Copilot. Four specialized AI agents collaborate through a structured workflow with persisted state to deliver software in parallel.
+A prompt engineering project that implements a **4-role multi-agent orchestration system** for VS Code GitHub Copilot. Four specialized AI agents collaborate through a context-aware workflow with persisted state, compacted memory, and resumable sessions.
 
 ## Architecture
 
@@ -13,8 +13,9 @@ A prompt engineering project that implements a **4-role multi-agent orchestratio
 ┌─────────────────────────────────────────────────────┐
 │                 ORCHESTRATOR                          │
 │  • Understands request                               │
-│  • Maintains .ai-control/ state                      │
+│  • Maintains .ai-control/ session + context          │
 │  • Dispatches subagents via runSubagent              │
+│  • Compacts history, restores sessions               │
 │  • Persists results, replans after bugs              │
 └───┬──────────────┬──────────────┬───────────────────┘
     │              │              │
@@ -32,8 +33,8 @@ A prompt engineering project that implements a **4-role multi-agent orchestratio
     ▼              ▼              ▼
 ┌─────────────────────────────────────────────────────┐
 │              .ai-control/ (Persisted State)           │
-│  state.json │ task-board.md │ bug-board.md           │
-│  tasks/     │ handoffs/     │ reports/    │ bugs/    │
+│  session.json │ context/ │ tasks/ │ bugs/            │
+│  handoffs/    │ CLAUDE.md │ compacted.md             │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -67,16 +68,12 @@ A prompt engineering project that implements a **4-role multi-agent orchestratio
 │           └── prompts.md                       # All prompt templates
 ├── .ai-control/
 │   ├── README.md                                # Usage guide
-│   └── templates/                               # Reusable workflow templates
-│       ├── state.json
-│       ├── prfaq.md
-│       ├── plan.md
-│       ├── task-board.md
-│       ├── bug-board.md
-│       ├── TASK-template.md
-│       ├── BUG-template.md
-│       ├── HANDOFF-template.md
-│       └── TEST-REPORT-template.md
+│   ├── CLAUDE.md                               # Project-level instructions
+│   └── templates/                              # Minimal workflow schemas/templates
+│       ├── session.json
+│       ├── TASK-template.json
+│       ├── BUG-template.json
+│       └── HANDOFF-template.md
 └── docs/
     └── workflow-guide.md                        # Detailed workflow walkthrough
 ```
@@ -96,15 +93,17 @@ A prompt engineering project that implements a **4-role multi-agent orchestratio
 ### Workflow Lifecycle
 
 1. **User** describes a feature or change request
-2. **Orchestrator** reads `.ai-control/state.json`, creates PRFAQ and plan
-3. **Orchestrator** dispatches **Planner** for task decomposition
-4. **Orchestrator** creates task cards from planner output
-5. **Orchestrator** dispatches **Executor(s)** for parallel implementation
-6. **Executor** implements in isolated branch/worktree, returns handoff
-7. **Orchestrator** marks task `ready_for_test`, dispatches **Tester**
-8. **Tester** verifies and reports evidence
-9. If passed → **Orchestrator** marks `done`
-10. If failed → **Orchestrator** creates bug card, reassigns
+2. **Orchestrator** reads `.ai-control/session.json`, restores compacted context, and collects git context
+3. **Orchestrator** decides whether the workflow is simple, standard, or complex
+4. **Orchestrator** dispatches **Planner** when decomposition is needed
+5. **Orchestrator** creates JSON task cards from planner output when needed
+6. **Orchestrator** dispatches **Executor(s)** with injected workflow context
+7. **Executor** implements in isolated branch/worktree, returns structured JSON handoff + context update
+8. **Orchestrator** marks task `ready_for_test`, dispatches **Tester**
+9. **Tester** verifies and reports structured evidence
+10. If passed → **Orchestrator** marks `done`
+11. If failed → **Orchestrator** creates a JSON bug card and reassigns
+12. As sessions grow, **Orchestrator** compacts older context into `.ai-control/context/compacted.md`
 
 ## Quick Start
 
@@ -122,16 +121,17 @@ In VS Code Copilot Chat, select an agent mode:
 1. Open Copilot Chat and select **@Orchestrator**
 2. Describe your feature or change request
 3. The Orchestrator will:
-   - Create `.ai-control/state.json` and workflow boards
-   - Decompose work into task cards
-   - Dispatch subagents as needed
-   - Track progress on the task board
+    - Create or refresh `.ai-control/session.json`
+    - Create `.ai-control/CLAUDE.md` if needed
+    - Decompose work into JSON task cards when needed
+    - Dispatch subagents with workflow context
+    - Track progress in session state
 
 ### Resuming an Existing Workflow
 
 1. Open Copilot Chat and select **@Orchestrator**
 2. Say "resume" or describe the next action
-3. The Orchestrator reads `.ai-control/state.json` and picks up where it left off
+3. The Orchestrator reads `.ai-control/session.json` and `.ai-control/context/compacted.md` and picks up where it left off
 
 ## Prompt Templates
 
@@ -146,8 +146,10 @@ All prompt templates are in [.copilot/skills/multi-agent-orchestrator/prompts.md
 
 ## Design Principles
 
-1. **Persisted state over chat memory** — `.ai-control/` is the source of truth
+1. **Persisted session state over chat memory** — `.ai-control/session.json` is the source of truth
 2. **Task isolation** — each executor works in a dedicated branch/worktree with scoped paths
 3. **Contract-first** — shared interfaces get their own task before consumers
 4. **Evidence-based completion** — tasks are done only when verification passes
 5. **Structured handoffs** — executors and testers return machine-parseable output
+6. **Compacted memory** — older context is summarized instead of lost
+7. **Resumable orchestration** — sessions can continue across conversations

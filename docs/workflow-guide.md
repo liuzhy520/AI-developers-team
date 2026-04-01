@@ -32,10 +32,17 @@ User Request → Orchestrator → Planner → Task Cards → Executor(s) → Tes
 ```
 
 Each role has strict boundaries:
-- **Orchestrator**: Manages state, dispatches agents. Only writer of `.ai-control/`.
+- **Orchestrator**: Manages state, context memory, and dispatch. Only writer of `.ai-control/`.
 - **Planner**: Plans tasks. Read-only, no code changes.
 - **Executor**: Implements one task. Scoped to allowed paths, one branch per task.
 - **Tester**: Tests and reports. Read-only for business code.
+
+The updated workflow also adds a context management layer:
+
+- `session.json` stores workflow state and compacted memory metadata.
+- `context/compacted.md` stores summarized earlier conversation history.
+- `context/git-snapshot.md` stores the latest git status and diff summary.
+- `CLAUDE.md` stores project-level instructions injected into subagent prompts.
 
 ## Prerequisites
 
@@ -54,16 +61,22 @@ The Orchestrator reads or creates the workflow state.
 1. User opens Copilot Chat, selects **@Orchestrator**.
 2. User describes the request (e.g., "Build a REST API for user management").
 3. Orchestrator creates:
-   - `.ai-control/state.json` — from `templates/state.json`
-   - `.ai-control/prfaq.md` — requirement summary
-   - `.ai-control/task-board.md` — empty task board
-   - `.ai-control/bug-board.md` — empty bug board
+  - `.ai-control/session.json` — from `templates/session.json`
+  - `.ai-control/CLAUDE.md` — project instructions
+  - `.ai-control/context/git-snapshot.md` — current git snapshot
+
+4. Orchestrator chooses workflow mode:
+  - `simple` for 1-2 obvious tasks
+  - `standard` for 3-5 tasks
+  - `complex` for 6+ tasks or contract-heavy work
 
 **If resuming:**
 
-1. Orchestrator reads `.ai-control/state.json`.
-2. Checks `task-board.md` and `bug-board.md` for current status.
-3. Determines next action based on state.
+1. Orchestrator reads `.ai-control/session.json`.
+2. Reads `.ai-control/context/compacted.md` if present.
+3. Reads `.ai-control/CLAUDE.md` if present.
+4. Refreshes `.ai-control/context/git-snapshot.md`.
+5. Determines next action based on persisted state and compacted context.
 
 ### Phase 2: Planning
 
@@ -72,28 +85,29 @@ The Orchestrator dispatches the Planner subagent.
 ```
 runSubagent(
   agentName="Planner",
-  prompt="You are the Planner subagent. Goal: <user request>. Read .ai-control/prfaq.md and the repository. Return task breakdown, dependencies, acceptance criteria, and test recommendations."
+  prompt="<workflow context preamble>\nGoal: <user request>. Read .ai-control/session.json and the repository. Return complexity mode, task breakdown, dependencies, acceptance criteria, and test recommendations."
 )
 ```
 
 The Planner returns:
+- Complexity recommendation (`simple | standard | complex`)
 - Task breakdown with IDs, titles, allowed paths
 - Dependency graph
 - Parallelization advice
 - Test recommendations
 - Risks and blockers
 
-The Orchestrator persists the plan to `.ai-control/plan.md`.
+The Orchestrator persists the result into `.ai-control/session.json` and, when needed, `tasks/TASK-NNN.json` files.
 
 ### Phase 3: Task Creation
 
 The Orchestrator creates task cards from the Planner's output.
 
 For each task:
-1. Copy `.ai-control/templates/TASK-template.md` to `.ai-control/tasks/TASK-NNN.md`.
-2. Fill in: `id`, `title`, `owner`, `branch`, `worktree`, `allowed_paths`, `depends_on`, `acceptance`, `verification`.
-3. Update `state.json` with the new task.
-4. Update `task-board.md` with the new row.
+1. Copy `.ai-control/templates/TASK-template.json` to `.ai-control/tasks/TASK-NNN.json`.
+2. Fill in: `id`, `title`, `owner`, `branch`, `worktree`, `allowed_paths`, `forbidden_paths`, `shared_contracts`, `depends_on`, `acceptance`, `verification`.
+3. Update `session.json` with the new task.
+4. For simple mode, inline tasks directly in `session.json` and skip separate task files.
 
 ### Phase 4: Execution
 
@@ -102,24 +116,27 @@ The Orchestrator dispatches Executor subagents for tasks whose dependencies are 
 ```
 runSubagent(
   agentName="Executor",
-  prompt="You are an Executor. Task card: .ai-control/tasks/TASK-001.md. Branch: feat/TASK-001-user-model. Worktree: ../wt-TASK-001. Read the task card, implement, verify, commit, push, and return structured output."
+  prompt="<workflow context preamble>\nTask card: .ai-control/tasks/TASK-001.json. Branch: feat/TASK-001-user-model. Worktree: ../wt-TASK-001. Read the task card, implement, verify, commit, push, and return JSON output with context_update."
 )
 ```
 
 **Executor workflow:**
 1. Read task card → extract allowed paths, acceptance, verification.
+2. Read injected workflow context.
 2. Create branch and worktree:
    ```bash
    git worktree add ../wt-TASK-001 -b feat/TASK-001-user-model
    ```
-3. Implement within allowed paths.
-4. Run verification commands.
-5. Commit and push.
-6. Return structured handoff.
+3. Capture git status and diff summary.
+4. Implement within allowed paths.
+5. Run verification commands.
+6. Commit and push.
+7. Return structured JSON handoff including `context_update`.
 
 **After executor returns:**
 - Orchestrator persists handoff to `.ai-control/handoffs/HANDOFF-TASK-001.md`.
-- Updates task status to `ready_for_test` in `state.json` and `task-board.md`.
+- Updates task status to `ready_for_test` in `session.json`.
+- Merges executor `context_update` into `session.json.context`.
 - If executor returned `blocked`, investigates and replans.
 
 ### Phase 5: Testing
@@ -129,7 +146,7 @@ The Orchestrator dispatches the Tester subagent.
 ```
 runSubagent(
   agentName="Tester",
-  prompt="You are the Tester. Task card: .ai-control/tasks/TASK-001.md. Branch: feat/TASK-001-user-model. Commit: abc1234. Run verification and regression tests. Return structured report."
+  prompt="<workflow context preamble>\nTask card: .ai-control/tasks/TASK-001.json. Branch: feat/TASK-001-user-model. Commit: abc1234. Run verification and regression tests. Return structured JSON report."
 )
 ```
 
@@ -142,16 +159,14 @@ runSubagent(
 6. Return structured test report.
 
 **After tester returns:**
-- Orchestrator persists report to `.ai-control/reports/REPORT-TASK-001.md`.
 - If `passed` → mark task `done`.
-- If `failed` → create bug cards, enter bug handling flow.
+- If `failed` → create JSON bug cards, enter bug handling flow.
 
 ### Phase 6: Bug Handling
 
 When a tester reports failures:
 
-1. Orchestrator creates bug cards in `.ai-control/bugs/BUG-NNN.md`.
-2. Updates `bug-board.md`.
+1. Orchestrator creates bug cards in `.ai-control/bugs/BUG-NNN.json`.
 3. Decides resolution strategy:
    - **Reassign** to original executor with updated criteria.
    - **New task** if the fix requires different scope.
@@ -163,7 +178,7 @@ When a tester reports failures:
 
 When all tasks are `done`:
 
-1. Orchestrator updates `state.json` with `phase: "complete"`.
+1. Orchestrator updates `session.json` with `phase: "complete"`.
 2. Summarizes the run: tasks completed, bugs fixed, remaining risks.
 3. Reports final status to the user.
 
@@ -171,9 +186,9 @@ When all tasks are `done`:
 
 ### Source of Truth Hierarchy
 
-1. `.ai-control/state.json` — machine-readable, canonical
-2. `.ai-control/task-board.md` — human-readable task status
-3. `.ai-control/bug-board.md` — human-readable bug status
+1. `.ai-control/session.json` — machine-readable, canonical
+2. `.ai-control/context/compacted.md` — canonical compressed long-session memory
+3. `.ai-control/tasks/*.json` and `.ai-control/bugs/*.json` — detailed workflow artifacts
 4. Chat history — supplementary only, not authoritative
 
 ### State Transitions
@@ -193,10 +208,36 @@ Bug:   open → in_fix → retest → closed
 ### Keeping State Aligned
 
 The Orchestrator must ensure consistency between:
-- `state.json` task entries
-- `task-board.md` rows
-- Individual task card `Status` fields
+- `session.json` task entries
+- JSON task cards
+- Bug cards
 - Branch names and worktree paths
+
+## Context Compaction
+
+When the conversation grows long, the Orchestrator compacts earlier turns.
+
+### Trigger
+
+- After roughly 8 turns
+- Or when the conversation becomes repetitive or stale
+
+### Compaction Strategy
+
+1. Preserve the most recent 4 messages/actions verbatim.
+2. Summarize earlier context into `.ai-control/context/compacted.md` with:
+  - scope
+  - tools used
+  - key files
+  - recent user requests
+  - pending work
+  - current work
+  - timeline
+3. Increment `context.compaction_count` in `session.json`.
+
+### Session Resumption
+
+On resume, the Orchestrator injects the compacted summary and continues without recapping or asking the user to repeat prior context.
 
 ## Parallel Execution
 
@@ -248,8 +289,8 @@ TASK-003: Implement user UI (depends on TASK-001)
 > "Add full-text search to the product catalog. Products should be searchable by name, description, and tags."
 
 **Step 2 — Orchestrator creates PRFAQ and dispatches Planner:**
-- Creates `.ai-control/state.json` with `run_id: "run-042"`.
-- Creates `.ai-control/prfaq.md` with the search feature summary.
+- Creates `.ai-control/session.json` with `run_id: "run-042"`.
+- Adds the search feature summary directly into `session.json.goal` and planning context.
 - Dispatches `runSubagent(agentName="Planner", ...)`.
 
 **Step 3 — Planner returns task breakdown:**

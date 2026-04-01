@@ -6,50 +6,45 @@ This directory holds the canonical workflow state for multi-agent orchestrated d
 
 ```
 .ai-control/
-├── README.md              ← this file
-├── state.json             ← machine-readable source of truth (runtime)
-├── prfaq.md               ← requirement summary (runtime)
-├── plan.md                ← current execution plan (runtime)
-├── task-board.md          ← task workflow board (runtime)
-├── bug-board.md           ← bug workflow board (runtime)
-├── tasks/                 ← individual task cards (runtime)
-├── bugs/                  ← individual bug cards (runtime)
-├── handoffs/              ← executor handoff records (runtime)
-├── reports/               ← tester report records (runtime)
-└── templates/             ← reusable templates (checked in)
-    ├── state.json
-    ├── prfaq.md
-    ├── plan.md
-    ├── task-board.md
-    ├── bug-board.md
-    ├── TASK-template.md
-    ├── BUG-template.md
-    ├── HANDOFF-template.md
-    └── TEST-REPORT-template.md
+├── README.md                  ← this file
+├── session.json               ← machine-readable source of truth + context store
+├── CLAUDE.md                  ← project-level instructions
+├── CLAUDE.local.md            ← local-only instructions (optional, untracked)
+├── context/
+│   ├── compacted.md           ← compacted conversation summary
+│   ├── git-snapshot.md        ← latest git status + diff summary
+│   └── discoveries.md         ← cached repository discoveries
+├── tasks/                     ← JSON task cards
+├── bugs/                      ← JSON bug cards
+├── handoffs/                  ← executor handoff records
+└── templates/                 ← minimal checked-in schemas/templates
+    ├── session.json
+    ├── TASK-template.json
+    ├── BUG-template.json
+    └── HANDOFF-template.md
 ```
 
 ## Rules
 
 1. **Only the Orchestrator** may create or modify files in this directory.
-2. Subagents (Planner, Executor, Tester) return structured output — the Orchestrator persists it.
-3. `state.json` is the machine-readable source of truth; markdown boards are human-readable views.
-4. Templates live in `templates/` — copy them to the parent directories when creating new items.
-5. Chat history is **not** the source of truth when `.ai-control/` has newer state.
+2. Subagents return structured output. The Orchestrator persists it.
+3. `session.json` is the machine-readable source of truth.
+4. `context/compacted.md` is the canonical long-session memory artifact.
+5. Chat history is **not** authoritative when `.ai-control/` has newer state.
 
 ## Usage
 
 ### Starting a New Workflow
 
-1. Copy `templates/state.json` to `./state.json` and fill in the `run_id` and `goal`.
-2. Copy `templates/prfaq.md` to `./prfaq.md` and draft the requirement summary.
-3. Copy `templates/plan.md` to `./plan.md` and define the execution plan.
-4. Copy `templates/task-board.md` to `./task-board.md`.
-5. Copy `templates/bug-board.md` to `./bug-board.md`.
-6. For each task, copy `templates/TASK-template.md` to `tasks/TASK-NNN.md`.
+1. Create `session.json` from `templates/session.json`.
+2. Create `CLAUDE.md` with project commands, architecture, and conventions.
+3. Create `context/` if it does not exist.
+4. For standard or complex workflows, create `tasks/TASK-NNN.json` files from `templates/TASK-template.json`.
 
 ### During Execution
 
-- After an executor hands off, copy `templates/HANDOFF-template.md` to `handoffs/HANDOFF-TASK-NNN.md`.
-- After a tester reports, copy `templates/TEST-REPORT-template.md` to `reports/REPORT-TASK-NNN.md`.
-- If a bug is found, copy `templates/BUG-template.md` to `bugs/BUG-NNN.md`.
-- Update `state.json`, `task-board.md`, and `bug-board.md` after every state transition.
+- Refresh `context/git-snapshot.md` before dispatching subagents.
+- Update `session.json` after every task, bug, or compaction event.
+- Persist executor handoffs to `handoffs/HANDOFF-NNN.md`.
+- Persist bugs to `bugs/BUG-NNN.json`.
+- Compact older conversation state into `context/compacted.md` when the session grows long.
