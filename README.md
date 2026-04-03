@@ -1,16 +1,9 @@
 # AI Developers Team — Multi-Agent Orchestrator for Copilot
 
-A prompt engineering project that implements a **4-role multi-agent orchestration system** for VS Code GitHub Copilot. Four specialized AI agents collaborate through a context-aware workflow with persisted state, compacted memory, and resumable sessions.
+**Version:** v1.0.0
+**Milestone:** Ceremony-Minimized Protocol Release (2026-04-03)
 
----
-
-**Update (2026-04-01):**
-- 项目文档已补充，详细工作流见 docs/workflow-guide.md。
-- 支持多代理协作，所有角色和协议已在 .github/agents/ 与 .github/copilot-instructions.md 明确。
-- 推荐先阅读 Quick Start 部分，了解如何在 VS Code Copilot Chat 中选择不同 agent 模式。
-- 欢迎贡献和反馈。
-
----
+A prompt engineering project that implements a **3-role multi-agent orchestration system** for VS Code GitHub Copilot. Three specialized AI agents collaborate through an automated workflow with persisted state, adversarial testing, and a complete audit trail.
 
 ## Architecture
 
@@ -22,29 +15,27 @@ A prompt engineering project that implements a **4-role multi-agent orchestratio
                        ▼
 ┌─────────────────────────────────────────────────────┐
 │                 ORCHESTRATOR                          │
-│  • Understands request                               │
-│  • Maintains .ai-control/ session + context          │
-│  • Dispatches subagents via runSubagent              │
-│  • Compacts history, restores sessions               │
-│  • Persists results, replans after bugs              │
-└───┬──────────────┬──────────────┬───────────────────┘
-    │              │              │
-    ▼              ▼              ▼
-┌────────┐  ┌──────────┐  ┌──────────┐
-│PLANNER │  │ EXECUTOR │  │  TESTER  │
-│        │  │          │  │          │
-│Plans   │  │Implements│  │Tests &   │
-│tasks,  │  │one task  │  │reports   │
-│deps,   │  │per branch│  │evidence, │
-│criteria│  │& worktree│  │drafts    │
-│        │  │          │  │bug cards │
-└────────┘  └──────────┘  └──────────┘
-    │              │              │
-    ▼              ▼              ▼
+│  • Plans tasks (absorbs Planner role)                │
+│  • Auto-dispatches Executor & Tester via runSubagent │
+│  • Arbitrates Tester findings                        │
+│  • Maintains audit log in session.json               │
+└───────────────┬──────────────┬──────────────────────┘
+                │              │
+                ▼              ▼
+         ┌──────────┐  ┌──────────┐
+         │ EXECUTOR │  │  TESTER  │
+         │          │  │          │
+         │Implements│  │Adversarial│
+         │one task, │  │testing,  │
+         │verifies, │  │code      │
+         │updates   │  │review,   │
+         │session   │  │read-only │
+         └──────────┘  └──────────┘
+                │              │
+                ▼              ▼
 ┌─────────────────────────────────────────────────────┐
-│              .ai-control/ (Persisted State)           │
-│  session.json │ context/ │ tasks/ │ bugs/            │
-│  handoffs/    │ CLAUDE.md │ compacted.md             │
+│           .ai-control/session.json                   │
+│    Single source of truth — tasks, log, decisions    │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -52,38 +43,32 @@ A prompt engineering project that implements a **4-role multi-agent orchestratio
 
 | Role | Agent File | Responsibility |
 |------|-----------|---------------|
-| **Orchestrator** | `.github/agents/orchestrator.agent.md` | State management, task allocation, subagent dispatch, replanning |
-| **Planner** | `.github/agents/planner.agent.md` | Task decomposition, dependency analysis, acceptance criteria |
-| **Executor** | `.github/agents/executor.agent.md` | Scoped implementation in isolated branch/worktree |
-| **Tester** | `.github/agents/tester.agent.md` | Verification, evidence collection, bug card drafting |
+| **Orchestrator** | `.github/agents/orchestrator.agent.md` | Plan, dispatch, arbitrate, audit log |
+| **Executor** | `.github/agents/executor.agent.md` | Implement one task, verify, update own status |
+| **Tester** | `.github/agents/tester.agent.md` | Adversarial testing, code review, strictly read-only |
 
 ## Project Structure
 
 ```
 .
 ├── .github/
-│   ├── copilot-instructions.md                  # Global base protocol (always active)
+│   ├── copilot-instructions.md                  # Base protocol (3 roles, 2 modes)
 │   ├── instructions/
 │   │   ├── task-isolation.instructions.md       # Task isolation rules
-│   │   └── handoff-and-test.instructions.md     # Handoff/test contract
+│   │   └── handoff-and-test.instructions.md     # Executor/Tester contract
 │   └── agents/
-│       ├── orchestrator.agent.md                # Orchestrator agent definition
-│       ├── planner.agent.md                     # Planner agent definition
-│       ├── executor.agent.md                    # Executor agent definition
-│       └── tester.agent.md                      # Tester agent definition
+│       ├── orchestrator.agent.md                # Orchestrator (plan + dispatch + arbitrate)
+│       ├── executor.agent.md                    # Executor (implement + verify)
+│       └── tester.agent.md                      # Tester (adversarial, read-only)
 ├── .copilot/
 │   └── skills/
 │       └── multi-agent-orchestrator/
-│           ├── SKILL.md                         # Orchestrator skill definition
-│           └── prompts.md                       # All prompt templates
+│           ├── SKILL.md                         # Skill definition
+│           └── prompts.md                       # Self-contained dispatch templates
 ├── .ai-control/
-│   ├── README.md                                # Usage guide
 │   ├── CLAUDE.md                               # Project-level instructions
-│   └── templates/                              # Minimal workflow schemas/templates
-│       ├── session.json
-│       ├── TASK-template.json
-│       ├── BUG-template.json
-│       └── HANDOFF-template.md
+│   └── templates/
+│       └── session.json                        # Session template
 └── docs/
     └── workflow-guide.md                        # Detailed workflow walkthrough
 ```
@@ -98,68 +83,49 @@ A prompt engineering project that implements a **4-role multi-agent orchestratio
 | **Scoped Instructions** | `.github/instructions/*.instructions.md` | Context-specific rules triggered by file patterns |
 | **Custom Agents** | `.github/agents/*.agent.md` | Named agent modes selectable in Copilot Chat |
 | **Skills** | `.copilot/skills/*/SKILL.md` | On-demand capabilities invoked by agents |
-| **Subagent Dispatch** | `runSubagent(agentName, prompt)` | Programmatic dispatch of named agents |
+| **Subagent Dispatch** | `runSubagent(prompt=...)` | Automatic dispatch with self-contained prompts |
 
 ### Workflow Lifecycle
 
-1. **User** describes a feature or change request
-2. **Orchestrator** reads `.ai-control/session.json`, restores compacted context, and collects git context
-3. **Orchestrator** decides whether the workflow is simple, standard, or complex
-4. **Orchestrator** dispatches **Planner** when decomposition is needed
-5. **Orchestrator** creates JSON task cards from planner output when needed
-6. **Orchestrator** dispatches **Executor(s)** with injected workflow context
-7. **Executor** implements in isolated branch/worktree, returns structured JSON handoff + context update
-8. **Orchestrator** marks task `ready_for_test`, dispatches **Tester**
-9. **Tester** verifies and reports structured evidence
-10. If passed → **Orchestrator** marks `done`
-11. If failed → **Orchestrator** creates a JSON bug card and reassigns
-12. As sessions grow, **Orchestrator** compacts older context into `.ai-control/context/compacted.md`
+1. **User** selects **@Orchestrator** and describes a feature or change
+2. **Orchestrator** reads `.ai-control/session.json` if resuming
+3. **Orchestrator** plans tasks, writes them inline into `session.json`
+4. **Orchestrator** auto-dispatches **Executor** via `runSubagent` with filled prompt template
+5. **Executor** implements, verifies, updates own task status in `session.json`
+6. **Orchestrator** auto-dispatches **Tester** via `runSubagent` (mandatory for every task)
+7. **Tester** performs adversarial testing, code review, returns structured report
+8. If issues found → **Orchestrator** records issues, re-dispatches Executor → Tester (max 3 rounds)
+9. When all tasks done → **Orchestrator** marks `phase: "complete"`
+
+### Workflow Modes
+
+| Mode | When | Behavior |
+|------|------|----------|
+| **Lightweight** | 1-3 tasks (default) | Sequential Executor → Tester per task |
+| **Pipeline** | 4+ tasks or user requests | Parallel Executors by dependency graph → Tester per task |
+
+### Audit Log
+
+The `log` array in `session.json` is the complete change history. A new AI reading only `goal + tasks + log` can reconstruct full context.
 
 ## Quick Start
 
-### Using Agent Modes
-
-In VS Code Copilot Chat, select an agent mode:
-
-- **@Orchestrator** — Start or resume a multi-agent workflow
-- **@Planner** — Get a task breakdown and plan
-- **@Executor** — Implement a specific task card
-- **@Tester** — Test and verify a task
-
 ### Starting a Fresh Workflow
 
-1. Open Copilot Chat and select **@Orchestrator**
+1. Open Copilot Chat, select **@Orchestrator**
 2. Describe your feature or change request
-3. The Orchestrator will:
-    - Create or refresh `.ai-control/session.json`
-    - Create `.ai-control/CLAUDE.md` if needed
-    - Decompose work into JSON task cards when needed
-    - Dispatch subagents with workflow context
-    - Track progress in session state
+3. The Orchestrator will plan, dispatch, test, and track everything automatically
 
 ### Resuming an Existing Workflow
 
-1. Open Copilot Chat and select **@Orchestrator**
-2. Say "resume" or describe the next action
-3. The Orchestrator reads `.ai-control/session.json` and `.ai-control/context/compacted.md` and picks up where it left off
-
-## Prompt Templates
-
-All prompt templates are in [.copilot/skills/multi-agent-orchestrator/prompts.md](.copilot/skills/multi-agent-orchestrator/prompts.md):
-
-- **Orchestrator prompt** — main agent loop
-- **Planner prompt** — task decomposition
-- **Executor prompt** — scoped implementation
-- **Tester prompt** — verification and reporting
-- **Bug re-assignment prompt** — triage and reassignment
-- **PUA injection block** — optional high-pressure behavior modifier
+1. Open Copilot Chat, select **@Orchestrator**
+2. Say "resume" — the Orchestrator reads `session.json` and continues
 
 ## Design Principles
 
-1. **Persisted session state over chat memory** — `.ai-control/session.json` is the source of truth
-2. **Task isolation** — each executor works in a dedicated branch/worktree with scoped paths
-3. **Contract-first** — shared interfaces get their own task before consumers
-4. **Evidence-based completion** — tasks are done only when verification passes
-5. **Structured handoffs** — executors and testers return machine-parseable output
-6. **Compacted memory** — older context is summarized instead of lost
-7. **Resumable orchestration** — sessions can continue across conversations
+1. **Single source of truth** — `session.json` holds all tasks, issues, and audit log
+2. **Adversarial testing** — Tester finds bugs, not rubber-stamps
+3. **Automatic dispatch** — Orchestrator drives the full loop via `runSubagent`
+4. **Minimal ceremony** — no separate task cards, bug files, or handoff files
+5. **Cold-start recovery** — `goal + tasks + log` is sufficient for a new AI to continue
+6. **Mandatory testing** — Tester runs for every task in every mode
