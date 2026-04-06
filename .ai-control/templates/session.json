@@ -1,21 +1,78 @@
 {
     "run_id": "",
     "goal": "",
-    "phase": "planning",
-    "owner": "orchestrator",
-    "created_at": "",
-    "updated_at": "",
-    "context": {
-        "compaction_count": 0,
-        "last_compacted_at": "",
-        "preserved_message_count": 4,
-        "total_context_chars": 0,
-        "key_files": [],
-        "pending_work": [],
-        "tools_used": [],
-        "decisions_made": [],
-        "current_work_summary": ""
+    "model_policy": {
+        "tiers": {
+            "flagship": "",
+            "balanced": "",
+            "fast": ""
+        },
+        "role_defaults": {
+            "orchestrator": "flagship",
+            "executor": "balanced",
+            "tester": "flagship"
+        },
+        "fallbacks": {
+            "global": "balanced",
+            "research_wave": "fast"
+        },
+        "escalation_rules": [
+            "Escalate executor one tier after a second failed fix-retest loop.",
+            "Use flagship tester for medium or high complexity tasks.",
+            "Use flagship executor immediately for blocked or high-risk tasks."
+        ]
     },
-    "tasks": [],
-    "bugs": []
+    "orchestration_policy": {
+        "research_wave": {
+            "enabled": true,
+            "max_parallel_agents": 3,
+            "write_state": false
+        },
+        "dispatch_priority": [
+            "task override",
+            "complexity rule",
+            "role default",
+            "global fallback"
+        ]
+    },
+    "mode": "lightweight",
+    "phase": "planning",
+    "updated_at": "",
+    "decisions": [],
+    "tasks": [{
+        "id": "TASK-001",
+        "title": "",
+        "status": "todo",
+        "depends_on": [],
+        "complexity": "medium",
+        "acceptance": [],
+        "verification": [],
+        "model_override": {},
+        "selected_models": {
+            "executor": {
+                "tier": "balanced",
+                "name": "",
+                "reason": ""
+            },
+            "tester": {
+                "tier": "flagship",
+                "name": "",
+                "reason": ""
+            }
+        },
+        "model_history": [],
+        "execution_profile": "write-heavy",
+        "dispatch_strategy": "sequential",
+        "changed_paths": [],
+        "verified": [],
+        "issues": [],
+        "notes": ""
+    }],
+    "log": [{
+        "at": "",
+        "type": "action",
+        "agent": "orchestrator",
+        "action": "session created",
+        "detail": ""
+    }]
 }

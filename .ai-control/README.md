@@ -1,50 +1,40 @@
 # .ai-control — Workflow State Directory
 
-This directory holds the canonical workflow state for multi-agent orchestrated delivery. It is managed exclusively by the **Orchestrator** agent.
+This directory holds the canonical workflow state for multi-agent orchestrated delivery.
 
 ## Directory Structure
 
 ```
 .ai-control/
 ├── README.md                  ← this file
-├── session.json               ← machine-readable source of truth + context store
+├── session.json               ← single source of truth (tasks, log, decisions)
 ├── CLAUDE.md                  ← project-level instructions
 ├── CLAUDE.local.md            ← local-only instructions (optional, untracked)
-├── context/
-│   ├── compacted.md           ← compacted conversation summary
-│   ├── git-snapshot.md        ← latest git status + diff summary
-│   └── discoveries.md         ← cached repository discoveries
-├── tasks/                     ← JSON task cards
-├── bugs/                      ← JSON bug cards
-├── handoffs/                  ← executor handoff records
-└── templates/                 ← minimal checked-in schemas/templates
-    ├── session.json
-    ├── TASK-template.json
-    ├── BUG-template.json
-    └── HANDOFF-template.md
+└── templates/
+    └── session.json           ← template for new sessions
 ```
 
 ## Rules
 
-1. **Only the Orchestrator** may create or modify files in this directory.
-2. Subagents return structured output. The Orchestrator persists it.
-3. `session.json` is the machine-readable source of truth.
-4. `context/compacted.md` is the canonical long-session memory artifact.
-5. Chat history is **not** authoritative when `.ai-control/` has newer state.
+1. `session.json` is the **single source of truth** — all tasks, issues, and audit log live here.
+2. The **Orchestrator** manages `log`, `decisions`, `phase`, `mode`, and task `issues`.
+3. **Executors** may update their own task's `status`, `changed_paths`, `verified`, `notes`.
+4. **Testers** are strictly read-only — they return reports to the Orchestrator.
+5. Chat history is **not** authoritative when `session.json` has newer state.
+6. A new AI reading `goal + model_policy + orchestration_policy + tasks + log` can reconstruct full context (cold-start).
+7. `model_policy` and `orchestration_policy` define how tasks are routed, escalated, and optionally researched before execution.
+8. Task routing metadata such as `complexity`, `selected_models`, `execution_profile`, and `dispatch_strategy` belong in `session.json`, not in side files.
 
 ## Usage
 
 ### Starting a New Workflow
 
 1. Create `session.json` from `templates/session.json`.
-2. Create `CLAUDE.md` with project commands, architecture, and conventions.
-3. Create `context/` if it does not exist.
-4. For standard or complex workflows, create `tasks/TASK-NNN.json` files from `templates/TASK-template.json`.
+2. Create or update `CLAUDE.md` with project commands, architecture, and conventions.
 
 ### During Execution
 
-- Refresh `context/git-snapshot.md` before dispatching subagents.
-- Update `session.json` after every task, bug, or compaction event.
-- Persist executor handoffs to `handoffs/HANDOFF-NNN.md`.
-- Persist bugs to `bugs/BUG-NNN.json`.
-- Compact older conversation state into `context/compacted.md` when the session grows long.
+- Orchestrator updates `session.json` after every dispatch, test, and arbitration.
+- All changes are tracked in the `log` array.
+- No separate task card, bug card, or handoff files are needed.
+- Optional read-only research waves inform planning, but only the Orchestrator persists the outcome into `session.json`.

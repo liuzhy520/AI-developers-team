@@ -1,45 +1,58 @@
 ---
-applyTo: ".ai-control/handoffs/**"
+applyTo: ".ai-control/**"
 ---
 
-# Handoff and Test Contract
+# Executor and Tester Contract
 
-These rules apply when working with executor handoffs and tester reports.
+These rules apply when working with `.ai-control/` workflow state.
 
-## Executor Handoff Format
+## Executor Output
 
-Executors must return structured JSON containing:
+After completing a task, the Executor updates its own task in `session.json`:
 
-- `task_id` — the task being handed off
-- `status` — `success` | `blocked` | `failed`
-- `branch` — the branch containing the implementation
-- `commit_sha` — the final commit hash
-- `changed_paths` — list of files modified
-- `verification` — array of `{ command, exit_code, summary }`
-- `open_risks` — any risks or concerns discovered during implementation
-- `handoff_summary` — short summary for the orchestrator to persist
-- `context_update` — incremental context merge payload with optional:
-	- `key_files_added`
-	- `decisions_made`
-	- `pending_work`
-	- `open_risks`
+- `status` — `"done"` or `"blocked"`
+- `changed_paths` — files modified
+- `verified` — array of verification results: `{ by, command, exit_code, summary, at }`
+- `notes` — observations, risks, or blockers
 
-## Tester Report Format
+The Executor consumes but does not modify these routing fields:
 
-Testers must return structured JSON containing:
+- `complexity`
+- `selected_models`
+- `execution_profile`
+- `dispatch_strategy`
 
-- `task_id` — the task being tested
-- `tested_branch` — the branch tested
-- `tested_commit` — the commit hash tested
-- `status` — `passed` | `failed` | `blocked`
-- `commands_run` — list of commands executed during testing
-- `evidence` — array of `{ command, exit_code, summary }`
-- `bugs` — array of bug draft objects if failures were found
-- `regression_risks` — any regression risks identified
+The Executor does NOT update: `log`, `decisions`, `phase`, `mode`, other tasks, or task `issues`.
+
+## Tester Report
+
+The Tester returns a structured JSON report to the Orchestrator. The Tester does NOT modify any files.
+
+Report must include:
+
+- `task_id` — the task tested
+- `status` — `"passed"`, `"failed"`, or `"issues_found"`
+- `verification_rerun` — results of re-running Executor's verification commands
+- `independently_verified` — what the Tester checked beyond the Executor's tests
+- `edge_cases_tested` — adversarial scenarios tested with results
+- `code_review_findings` — issues found by reading the code
+- `issues_found` — bugs or gaps discovered, with evidence
+- `suggested_test_code` — test code the Executor should implement
+- `regression_risks` — identified regression risks
+
+Tester prompts should also include the task's `complexity`, `execution_profile`, and selected tester model so the Tester can calibrate depth without widening scope.
+
+## Tester Requirements
+
+- Tester MUST independently verify — not just re-run the Executor's commands.
+- Tester MUST design adversarial test scenarios based on the actual code changes.
+- Tester MUST NOT report "all passed" without documenting independent testing evidence.
+- Tester MUST NOT modify any file — business code, test code, config, or `.ai-control/`.
+- Tester SHOULD assume a higher-capability review mode for medium/high complexity tasks and multi-round retests.
 
 ## Boundary Rules
 
-- Testers must not edit business code.
-- Executors and testers must not write files under `.ai-control/`; they return structured output to the orchestrator.
-- The orchestrator is responsible for persisting session state, bug cards, handoffs, and context updates.
-- A task may be marked complete only after verification evidence is present.
+- The Orchestrator is the only agent that persists Tester results into `session.json`.
+- The Orchestrator arbitrates issues: decides severity, assigns fixes to Executor.
+- A task may be marked `"done"` only after the Tester has reviewed it.
+- If the Tester triggers a second fix→retest loop or finds a high-severity issue, the Orchestrator should consider escalating the Executor model tier and record that decision in the task history.

@@ -1,146 +1,137 @@
 # Multi-Agent Base Protocol
 
-This file is the canonical base protocol for orchestrated multi-agent delivery with context-aware memory management. It applies to every Copilot conversation in this workspace.
+This file is the canonical base protocol for orchestrated multi-agent delivery. It applies to every Copilot conversation in this workspace.
 
 ## Core Rules
 
-- Treat `.ai-control/session.json` as the canonical workflow state and context store.
+- Treat `.ai-control/session.json` as the canonical workflow state — the single source of truth.
 - Read `.ai-control/session.json` before substantial work if it exists.
-- Only the orchestrator agent may create or update files under `.ai-control/`.
-- Planner only plans. Tester only tests. Executors only implement assigned tasks.
-- Do not rely on chat history as the source of truth when `.ai-control/` has newer state.
+- Do not rely on chat history when `session.json` has newer state.
+- All tasks, issues, and audit logs live inline in `session.json`. No separate task/bug/handoff files.
+- Keep the main workflow as a 3-role delivery pipeline. Do not introduce free-form teammate collaboration as the default mode.
+- The Orchestrator is the only agent that selects subagent model tiers, execution profiles, and dispatch strategies.
+- Tester remains mandatory for every task, even when planning includes optional read-only research waves.
 
-## Role Summary
+## Roles (3 roles)
 
-| Role | Responsibility | May Write `.ai-control/`? | May Write Business Code? |
+| Role | Responsibility | May Write `session.json`? | May Write Business Code? |
 |------|---------------|--------------------------|-------------------------|
-| Orchestrator | Understand request, maintain state, manage context, dispatch subagents, replan after bugs | Yes | No (unless workflow-control task) |
-| Planner | Produce planning artifacts: task breakdown, dependencies, acceptance criteria | No | No |
-| Executor | Implement exactly one task in one branch/worktree, verify, commit, push | No | Yes (scoped to allowed paths) |
-| Tester | Test a target branch/commit, report evidence, draft bug cards | No | No |
-
-## Workflow State Files
-
-All workflow state lives under `.ai-control/`:
-
-- `session.json` — machine-readable source of truth (replaces state.json)
-- `CLAUDE.md` — project-level instructions (build commands, conventions, architecture)
-- `CLAUDE.local.md` — local instructions (not committed)
-- `context/compacted.md` — compacted conversation summary
-- `context/git-snapshot.md` — latest git state snapshot
-- `context/discoveries.md` — cached codebase exploration findings
-- `tasks/TASK-NNN.json` — individual task cards (JSON format)
-- `bugs/BUG-NNN.json` — individual bug cards (JSON format)
-- `handoffs/HANDOFF-NNN.md` — executor implementation handoffs
+| Orchestrator | Plan tasks, optionally run read-only research waves, select models, auto-dispatch Executor/Tester, arbitrate bugs, maintain audit log | Yes (full) | No (unless workflow-control) |
+| Executor | Implement exactly one task, run verification, follow assigned execution profile and model context | Yes (own task only: `status`, `changed_paths`, `verified`, `notes`) | Yes |
+| Tester | Adversarial testing — find bugs Executor missed. Strictly read-only | No | No |
 
 ## Subagent Dispatch
 
-Use `runSubagent` with the following agent names for multi-agent orchestration:
+Use `runSubagent` with these agent names:
 
-- `Orchestrator` — main agent loop, state management, dispatch
-- `Planner` — read-only planning and task decomposition
-- `Executor` — scoped implementation of a single task
-- `Tester` — read-only testing and evidence collection
+- `orchestrator` — main loop (plan + dispatch + arbitrate)
+- `executor` — scoped implementation of a single task
+- `tester` — adversarial testing and reporting
 
-## Context Management Protocol
+Self-contained prompt templates live in `.copilot/skills/multi-agent-orchestrator/prompts.md`. These templates embed the full role definition — subagents do NOT auto-load `.github/agents/*.agent.md`.
 
-### Session Persistence
+The Orchestrator may also run an optional read-only research wave before task execution for high-ambiguity work. Research results inform planning but do not update workflow state directly.
 
-`session.json` stores both workflow state AND compressed context:
+## Workflow State
+
+All state lives in `.ai-control/session.json`:
 
 ```json
 {
   "run_id": "run-001",
   "goal": "<user request>",
-  "phase": "planning|executing|testing|complete",
-  "context": {
-    "compaction_count": 0,
-    "preserved_message_count": 4,
-    "key_files": [],
-    "pending_work": [],
-    "tools_used": [],
-    "decisions_made": [],
-    "current_work_summary": ""
+  "model_policy": {
+    "tiers": {"flagship": "GPT-5.4", "balanced": "", "fast": ""},
+    "role_defaults": {"orchestrator": "flagship", "executor": "balanced", "tester": "flagship"}
   },
-  "tasks": [],
-  "bugs": []
+  "orchestration_policy": {
+    "research_wave": {"enabled": true, "max_parallel_agents": 3, "write_state": false}
+  },
+  "mode": "lightweight | pipeline",
+  "phase": "planning | executing | testing | complete",
+  "updated_at": "ISO",
+  "decisions": [],
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "title": "...",
+      "status": "todo | doing | testing | done | blocked",
+      "depends_on": [],
+      "complexity": "low | medium | high",
+      "acceptance": ["human-readable criteria"],
+      "verification": ["pytest tests/ -v"],
+      "model_override": {},
+      "selected_models": {
+        "executor": {"tier": "balanced", "name": "", "reason": ""},
+        "tester": {"tier": "flagship", "name": "", "reason": ""}
+      },
+      "model_history": [],
+      "execution_profile": "read-heavy | write-heavy | adversarial-test | parallel-safe",
+      "dispatch_strategy": "sequential | parallel_wave | retest_loop",
+      "changed_paths": [],
+      "verified": [],
+      "issues": [],
+      "notes": ""
+    }
+  ],
+  "log": []
 }
 ```
 
-### Context Compaction
+## Supporting Files
 
-When conversations grow long, the Orchestrator must compress earlier context:
+| File | Purpose |
+|------|---------|
+| `.ai-control/session.json` | Single source of truth — tasks, log, decisions |
+| `.ai-control/CLAUDE.md` | Project-level instructions (build commands, conventions) |
+| `.ai-control/CLAUDE.local.md` | Local-only instructions (not committed) |
+| `.ai-control/templates/session.json` | Template for new sessions |
 
-1. **Trigger**: After 8+ conversation turns, or when context feels repetitive/stale.
-2. **Preserve**: Keep the most recent 4 messages/actions verbatim.
-3. **Summarize**: Compress earlier context into a structured summary:
-   - Scope: how many messages were compacted
-   - Tools mentioned (file paths explored, commands run)
-   - Key files referenced in the conversation
-   - Recent user requests (last 3)
-   - Pending work items
-   - Current work in progress
-   - Key timeline of decisions and actions
-4. **Write**: Save the summary to `.ai-control/context/compacted.md`.
-5. **Update**: Increment `context.compaction_count` in `session.json`.
+## Workflow Modes
 
-### Session Resumption
-
-When starting a new conversation with an existing `.ai-control/session.json`:
-
-1. Read `session.json` to restore workflow state.
-2. Read `context/compacted.md` if it exists to restore conversation context.
-3. Read `CLAUDE.md` for project-level instructions.
-4. Inject this preamble into your working context:
-   ```
-   This session continues from a previous conversation.
-   [compacted context summary]
-   Recent messages are preserved verbatim.
-   Continue without recapping or asking about the summary.
-   ```
-5. Do NOT ask the user to repeat their request — resume from where the last session left off.
-
-### Git Context Collection
-
-At the start of orchestration and before dispatching any subagent:
-
-1. Run `git status --short --branch` to capture current state.
-2. Run `git diff --stat` to capture change summary.
-3. Write results to `.ai-control/context/git-snapshot.md`.
-4. Include a 1-2 line git state summary in every subagent dispatch prompt.
-
-### Instruction File Discovery
-
-Discover project-level instruction files by searching upward from the working directory:
-
-1. Look for: `CLAUDE.md`, `CLAUDE.local.md`, `.claude/CLAUDE.md`, `.claude/instructions.md`
-2. Search from the current directory up to the repository root.
-3. Deduplicate by content hash.
-4. Truncate individual files to 4000 characters.
-5. Total injection budget: 12000 characters across all instruction files.
-6. Inject discovered instructions into the system context for every subagent.
-
-### Subagent Context Injection
-
-Every subagent dispatch prompt MUST include a context preamble (max 2000 chars):
-
-```
-## Workflow Context (auto-injected)
-- Run: <run_id> | Phase: <phase> | Tasks: <total> total, <done> done, <in_progress> in-progress
-- Goal: <goal summary>
-- Key decisions: <comma-separated list from session.json context.decisions_made>
-- Git state: <branch, files modified summary>
-- Compacted summary: <truncated content from context/compacted.md>
-```
-
-## Progressive Complexity
-
-The workflow automatically scales based on task count:
-
-| Mode | Task Count | Behavior |
+| Mode | Condition | Behavior |
 |------|-----------|----------|
-| **Simple** | 1-2 | Tasks inline in session.json. Skip Planner. Orchestrator dispatches directly. |
-| **Standard** | 3-5 | Full planning cycle. Separate task JSON files. Standard Executor + Tester flow. |
-| **Complex** | 6+ | Full planning + contract tasks + parallel topology + dependency graph. |
+| **Lightweight** | 1-3 tasks (default) | Orchestrator plans → sequential Executor → Tester per task |
+| **Pipeline** | 4+ tasks or user requests | Orchestrator plans → parallel Executors (by dependency graph) → Tester per task |
 
-The Orchestrator determines the mode after the Planner returns (or immediately for obvious simple tasks).
+Tester is **mandatory** in both modes. No exceptions.
+
+For ambiguous or high-risk work, the Orchestrator may insert a read-only research wave before the main execution loop. This is a planning aid, not a fourth permanent role.
+
+## Model Routing
+
+- Model routing is a protocol-level concern. The Orchestrator decides model tiers before dispatch.
+- Routing priority is: task override → complexity rule → role default → global fallback.
+- Recommended mixed-catalog tiers:
+  - `flagship` — highest reasoning quality, e.g. `GPT-5.4`
+  - `balanced` — general implementation and analysis
+  - `fast` — low-latency, low-cost local or mechanical work
+- Default role policy:
+  - Orchestrator → `flagship`
+  - Executor → `fast` for low complexity, `balanced` for medium, `flagship` for high
+  - Tester → `balanced` for low complexity, `flagship` for medium and high complexity
+- Escalate the Executor one tier when a task is blocked, enters a second fix→retest loop, or carries high-severity findings.
+
+## Execution Profiles
+
+- Each task records an `execution_profile` chosen by the Orchestrator.
+- Supported profiles are:
+  - `read-heavy` — research or code understanding with no intended edits
+  - `write-heavy` — normal implementation work
+  - `adversarial-test` — hostile validation and code review
+  - `parallel-safe` — independent work suitable for a pipeline wave
+- Execution profiles guide prompts and review scope. They do not create a second source of truth outside `session.json`.
+
+## Audit Log
+
+The `log` array in `session.json` is the complete change history. A new AI cold-starting reads `goal + model_policy + orchestration_policy + tasks + log` to reconstruct full context.
+
+| Type | When | Key Fields |
+|------|------|------------|
+| `action` | Agent completes a step | `agent`, `action`, `detail` |
+| `plan_change` | Requirements change | `trigger`, `before`, `after`, `tasks_added/modified/removed` |
+| `iteration` | Fix→retest cycle | `iteration`, `tasks`, `issues_found`, `issues_fixed`, `detail` |
+
+Include model-routing and dispatch rationale in `detail`, for example:
+- `selected executor=balanced, tester=flagship for TASK-002 due to medium complexity`
+- `spawned read-only research wave for auth, data, and API surfaces`

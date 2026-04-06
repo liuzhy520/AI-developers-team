@@ -1,39 +1,53 @@
 ---
-applyTo: ".ai-control/tasks/**"
+applyTo: ".ai-control/**"
 ---
 
 # Task Isolation
 
-These rules apply when working with task cards and executor assignments.
+These rules apply when working with tasks in `session.json`.
 
 ## Executor Constraints
 
-- Executors may only modify files listed in the assigned task card under `allowed_paths`.
-- Read only the paths listed in `allowed_paths` plus any `shared_contracts` explicitly referenced by the task card.
-- Do not inspect or modify sibling task cards unless the task card lists them in `depends_on`.
-- If a task requires changes outside the allowed paths, stop and report `blocked` to the orchestrator.
-- If multiple tasks need the same interface or schema, create or wait for a dedicated contract task before implementation.
-- Do not widen scope because a nearby improvement seems convenient; return the risk or follow-up to the orchestrator.
+- Executors implement one task at a time.
+- Executors may only update their own task's fields in `session.json`: `status`, `changed_paths`, `verified`, `notes`.
+- Executors do not update other tasks, the `log` array, `decisions`, or `phase`.
+- If a task requires changes that conflict with another in-progress task, stop and report `"blocked"`.
+- Do not widen scope — record follow-ups in `notes` instead of implementing them.
+- Executors must respect task routing metadata chosen by the Orchestrator: `complexity`, `selected_models`, `execution_profile`, and `dispatch_strategy`.
 
-## Task Card Requirements
+## Task Schema
 
-Every task card must be JSON and define:
+Tasks live inline in `session.json`. Each task has:
 
-- `id` — unique task identifier (e.g. `TASK-001`)
-- `title` — short description of the deliverable
-- `status` — `todo | in_progress | ready_for_test | done | blocked | failed`
-- `owner` — assigned executor agent
-- `branch` — dedicated git branch for this task
-- `worktree` — dedicated git worktree path
-- `allowed_paths` — exhaustive list of paths the executor may modify
-- `forbidden_paths` — optional explicit exclusions
-- `shared_contracts` — shared schema/API/interface files that may be read
+- `id` — unique identifier (e.g. `TASK-001`)
+- `title` — short description
+- `status` — `todo | doing | testing | done | blocked`
 - `depends_on` — prerequisite task IDs
+- `complexity` — `low | medium | high`
 - `acceptance` — acceptance criteria as an array of strings
 - `verification` — commands to run before claiming completion
+- `model_override` — optional task-specific routing override
+- `selected_models` — latest Executor/Tester routing choice and rationale
+- `model_history` — prior routing choices and escalation notes
+- `execution_profile` — `read-heavy | write-heavy | adversarial-test | parallel-safe`
+- `dispatch_strategy` — `sequential | parallel_wave | retest_loop`
+- `changed_paths` — files modified (filled by Executor)
+- `verified` — verification results (filled by Executor and Tester)
+- `issues` — problems found by Tester (filled by Orchestrator)
+- `notes` — observations, risks, blockers
 
-## Cross-Task Contracts
+## Dependencies
 
-- When multiple tasks share an interface, schema, or API surface, the orchestrator must create a contract task first.
-- Contract tasks define the shared artifact and are marked as dependencies for all consuming tasks.
-- Executors must not modify contract artifacts unless their task card explicitly allows it.
+- Tasks with `depends_on` entries must wait until all dependencies are `"done"`.
+- In pipeline mode, the Orchestrator dispatches independent tasks in parallel.
+- If a dependency is `"blocked"`, dependent tasks are also blocked.
+- Optional read-only research waves may run before task execution, but research subagents do not claim tasks and do not write `session.json`.
+
+## State Transitions
+
+```
+todo → doing → testing → done
+         │         │
+         ▼         ▼
+      blocked    doing (fix issues → retest)
+```

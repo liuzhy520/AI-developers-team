@@ -1,326 +1,225 @@
 # Workflow Guide
 
-A detailed walkthrough of the multi-agent orchestration workflow for VS Code GitHub Copilot.
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Prerequisites](#prerequisites)
-- [Workflow Phases](#workflow-phases)
-  - [Phase 1: Initialization](#phase-1-initialization)
-  - [Phase 2: Planning](#phase-2-planning)
-  - [Phase 3: Task Creation](#phase-3-task-creation)
-  - [Phase 4: Execution](#phase-4-execution)
-  - [Phase 5: Testing](#phase-5-testing)
-  - [Phase 6: Bug Handling](#phase-6-bug-handling)
-  - [Phase 7: Completion](#phase-7-completion)
-- [State Management](#state-management)
-- [Parallel Execution](#parallel-execution)
-- [Contract Tasks](#contract-tasks)
-- [Example Walkthrough](#example-walkthrough)
-
----
+A detailed walkthrough of the upgraded 3-role multi-agent orchestration workflow for VS Code GitHub Copilot.
 
 ## Overview
 
-The multi-agent orchestration system uses four specialized roles to deliver software changes:
-
 ```
-User Request → Orchestrator → Planner → Task Cards → Executor(s) → Tester(s) → Done
-                    ↑                                                    │
-                    └──────────── Bug Re-assignment ←────────────────────┘
+User Request → Orchestrator (research/plan/route) → Executor(s) → Tester(s) → Done
+                    ↑                                           │
+                    └────────────── Fix→Retest Loop ←───────────┘
 ```
 
-Each role has strict boundaries:
-- **Orchestrator**: Manages state, context memory, and dispatch. Only writer of `.ai-control/`.
-- **Planner**: Plans tasks. Read-only, no code changes.
-- **Executor**: Implements one task. Scoped to allowed paths, one branch per task.
-- **Tester**: Tests and reports. Read-only for business code.
+Three specialized roles:
 
-The updated workflow also adds a context management layer:
+- **Orchestrator**: Plans tasks, optionally runs read-only research waves, assigns model tiers and execution profiles, auto-dispatches Executor and Tester via `runSubagent`, arbitrates bugs, maintains audit log.
+- **Executor**: Implements one task, runs verification, updates own task status in `session.json`, follows assigned routing context.
+- **Tester**: Adversarial testing — finds bugs Executor missed. Strictly read-only. Mandatory in every workflow.
 
-- `session.json` stores workflow state and compacted memory metadata.
-- `context/compacted.md` stores summarized earlier conversation history.
-- `context/git-snapshot.md` stores the latest git status and diff summary.
-- `CLAUDE.md` stores project-level instructions injected into subagent prompts.
+All state lives in a single file: `.ai-control/session.json`.
 
 ## Prerequisites
 
-1. VS Code with GitHub Copilot extension installed.
+1. VS Code with GitHub Copilot extension.
 2. This repository cloned locally.
-3. Agent modes visible in Copilot Chat (the `.github/agents/*.agent.md` files define them).
+3. Agent modes visible in Copilot Chat (`.github/agents/*.agent.md`).
 
-## Workflow Phases
+## Workflow Modes
 
-### Phase 1: Initialization
+| Mode | Condition | Execution Pattern |
+|------|-----------|-------------------|
+| **Lightweight** | 1-3 tasks (default) | Sequential: one Executor → one Tester per task |
+| **Pipeline** | 4+ tasks or user requests | Parallel: independent Executors dispatched simultaneously → Tester per task |
 
-The Orchestrator reads or creates the workflow state.
+Tester is **mandatory** in both modes. No exceptions.
 
-**If starting fresh:**
+## Routing Layer
 
+The upgraded workflow adds a routing layer controlled by the Orchestrator:
+
+- `complexity` — `low | medium | high`
+- `execution_profile` — `read-heavy | write-heavy | adversarial-test | parallel-safe`
+- `selected_models` — Executor and Tester model tier/name plus rationale
+- `dispatch_strategy` — `sequential | parallel_wave | retest_loop`
+
+Recommended mixed-catalog tiers:
+
+- `flagship` — highest reasoning quality, e.g. `GPT-5.4`
+- `balanced` — normal implementation and analysis work
+- `fast` — low-latency mechanical or localized tasks
+
+Default routing policy:
+
+- Orchestrator → `flagship`
+- Executor → `fast` for low, `balanced` for medium, `flagship` for high
+- Tester → `balanced` for low, `flagship` for medium and high
+
+If a task becomes blocked, enters a second fix→retest loop, or carries high-severity findings, the Orchestrator escalates the Executor one tier and records that in `model_history` and `log`.
+
+## Phases
+
+### Phase 1: Planning
+
+The Orchestrator handles planning directly (no separate Planner dispatch).
+
+For ambiguous or high-risk requests, planning may start with a **read-only research wave**:
+
+1. Orchestrator spawns up to 3 read-only research subagents.
+2. Each explores one scope, such as architecture, risk, or code-path discovery.
+3. Research results feed planning, model routing, and test recommendations.
+4. Research subagents do not edit files or write `session.json`.
+
+**Starting fresh:**
 1. User opens Copilot Chat, selects **@Orchestrator**.
-2. User describes the request (e.g., "Build a REST API for user management").
-3. Orchestrator creates:
-  - `.ai-control/session.json` — from `templates/session.json`
-  - `.ai-control/CLAUDE.md` — project instructions
-  - `.ai-control/context/git-snapshot.md` — current git snapshot
+2. User describes the request.
+3. Orchestrator reads `.ai-control/CLAUDE.md` for project instructions.
+4. Orchestrator optionally runs research wave if needed.
+5. Orchestrator decomposes the request into tasks with acceptance criteria and verification commands.
+6. Orchestrator assigns each task a complexity, execution profile, dispatch strategy, and selected model tiers.
+7. Orchestrator writes tasks into `session.json`, chooses lightweight or pipeline mode.
+6. Orchestrator records plan in the `log` array.
 
-4. Orchestrator chooses workflow mode:
-  - `simple` for 1-2 obvious tasks
-  - `standard` for 3-5 tasks
-  - `complex` for 6+ tasks or contract-heavy work
+**Resuming:**
+1. Orchestrator reads `session.json` — the `goal + model_policy + orchestration_policy + tasks + log` contain full context.
+2. Continues from current phase without asking user to repeat.
 
-**If resuming:**
+### Phase 2: Execution
 
-1. Orchestrator reads `.ai-control/session.json`.
-2. Reads `.ai-control/context/compacted.md` if present.
-3. Reads `.ai-control/CLAUDE.md` if present.
-4. Refreshes `.ai-control/context/git-snapshot.md`.
-5. Determines next action based on persisted state and compacted context.
-
-### Phase 2: Planning
-
-The Orchestrator dispatches the Planner subagent.
+Orchestrator dispatches Executor subagents using self-contained prompt templates from `prompts.md`:
 
 ```
-runSubagent(
-  agentName="Planner",
-  prompt="<workflow context preamble>\nGoal: <user request>. Read .ai-control/session.json and the repository. Return complexity mode, task breakdown, dependencies, acceptance criteria, and test recommendations."
-)
+runSubagent(prompt="<filled executor template>")
 ```
 
-The Planner returns:
-- Complexity recommendation (`simple | standard | complex`)
-- Task breakdown with IDs, titles, allowed paths
-- Dependency graph
-- Parallelization advice
-- Test recommendations
-- Risks and blockers
+- **Lightweight**: One Executor at a time. Wait for result before dispatching next.
+- **Pipeline**: Analyze dependency graph. Dispatch all independent Executors in parallel. Next wave after current wave completes.
 
-The Orchestrator persists the result into `.ai-control/session.json` and, when needed, `tasks/TASK-NNN.json` files.
+After each Executor returns:
+1. Orchestrator verifies the task status update in `session.json`.
+2. Verifies that routing fields remain intact and adds any escalation notes to `model_history` if applicable.
+3. Records an `action` log entry.
+3. Proceeds to testing.
 
-### Phase 3: Task Creation
+### Phase 3: Adversarial Testing
 
-The Orchestrator creates task cards from the Planner's output.
-
-For each task:
-1. Copy `.ai-control/templates/TASK-template.json` to `.ai-control/tasks/TASK-NNN.json`.
-2. Fill in: `id`, `title`, `owner`, `branch`, `worktree`, `allowed_paths`, `forbidden_paths`, `shared_contracts`, `depends_on`, `acceptance`, `verification`.
-3. Update `session.json` with the new task.
-4. For simple mode, inline tasks directly in `session.json` and skip separate task files.
-
-### Phase 4: Execution
-
-The Orchestrator dispatches Executor subagents for tasks whose dependencies are satisfied.
+For EVERY completed task, Orchestrator dispatches the Tester:
 
 ```
-runSubagent(
-  agentName="Executor",
-  prompt="<workflow context preamble>\nTask card: .ai-control/tasks/TASK-001.json. Branch: feat/TASK-001-user-model. Worktree: ../wt-TASK-001. Read the task card, implement, verify, commit, push, and return JSON output with context_update."
-)
+runSubagent(prompt="<filled tester template>")
 ```
 
-**Executor workflow:**
-1. Read task card → extract allowed paths, acceptance, verification.
-2. Read injected workflow context.
-2. Create branch and worktree:
-   ```bash
-   git worktree add ../wt-TASK-001 -b feat/TASK-001-user-model
-   ```
-3. Capture git status and diff summary.
-4. Implement within allowed paths.
-5. Run verification commands.
-6. Commit and push.
-7. Return structured JSON handoff including `context_update`.
+The Tester receives: acceptance criteria, verification commands, changed paths, code diff summary, Executor's verification results, and planning test recommendations.
+The Tester also receives task complexity, execution profile, selected tester model, and any escalation reason.
 
-**After executor returns:**
-- Orchestrator persists handoff to `.ai-control/handoffs/HANDOFF-TASK-001.md`.
-- Updates task status to `ready_for_test` in `session.json`.
-- Merges executor `context_update` into `session.json.context`.
-- If executor returned `blocked`, investigates and replans.
+**Tester requirements:**
+- Must read the actual code changes (not just run commands).
+- Must design independent test scenarios beyond Executor's verification.
+- Must test adversarial inputs, failure modes, boundary conditions.
+- Must NOT modify any files — returns a structured JSON report.
+- Must NOT report "all passed" without documenting independent testing evidence.
 
-### Phase 5: Testing
+### Phase 4: Arbitration & Fix Loop
 
-The Orchestrator dispatches the Tester subagent.
+When the Tester finds issues:
 
-```
-runSubagent(
-  agentName="Tester",
-  prompt="<workflow context preamble>\nTask card: .ai-control/tasks/TASK-001.json. Branch: feat/TASK-001-user-model. Commit: abc1234. Run verification and regression tests. Return structured JSON report."
-)
-```
+1. Orchestrator reviews the Tester's report.
+2. Records issues into the task's `issues` array in `session.json`.
+3. Records an `iteration` log entry.
+4. If needed, escalates the Executor model tier and appends a `model_history` entry.
+5. Re-dispatches Executor with the Tester's findings to fix the issues.
+6. Re-dispatches Tester to retest after fix.
+6. **Max 3 rounds** per task. After 3 rounds → reports to user for decision.
 
-**Tester workflow:**
-1. Check out the target branch/commit.
-2. Run verification commands from the task card.
-3. Run any additional tests from the test plan.
-4. Produce evidence (command output, logs).
-5. If failures found, draft bug cards.
-6. Return structured test report.
+### Phase 5: Completion
 
-**After tester returns:**
-- If `passed` → mark task `done`.
-- If `failed` → create JSON bug cards, enter bug handling flow.
+When all tasks are `"done"`:
+1. Orchestrator sets `phase: "complete"` in `session.json`.
+2. Records final log entry.
+3. Reports summary to user.
 
-### Phase 6: Bug Handling
+## Requirement Changes
 
-When a tester reports failures:
+When the user changes requirements mid-workflow:
 
-1. Orchestrator creates bug cards in `.ai-control/bugs/BUG-NNN.json`.
-3. Decides resolution strategy:
-   - **Reassign** to original executor with updated criteria.
-   - **New task** if the fix requires different scope.
-   - **Won't fix** if out of scope.
-4. Dispatches the appropriate executor with the bug context.
-5. After fix, dispatches tester for retest.
-
-### Phase 7: Completion
-
-When all tasks are `done`:
-
-1. Orchestrator updates `session.json` with `phase: "complete"`.
-2. Summarizes the run: tasks completed, bugs fixed, remaining risks.
-3. Reports final status to the user.
+1. Orchestrator records a `plan_change` log entry with before/after summaries.
+2. Updates/adds/removes tasks in `session.json`.
+3. Re-dispatches affected Executors and Testers.
 
 ## State Management
 
-### Source of Truth Hierarchy
+### Single Source of Truth
 
-1. `.ai-control/session.json` — machine-readable, canonical
-2. `.ai-control/context/compacted.md` — canonical compressed long-session memory
-3. `.ai-control/tasks/*.json` and `.ai-control/bugs/*.json` — detailed workflow artifacts
-4. Chat history — supplementary only, not authoritative
+`.ai-control/session.json` contains everything:
+- `goal` — what we're building
+- `model_policy` — role defaults, tiers, escalation rules
+- `orchestration_policy` — research-wave and routing preferences
+- `mode` — lightweight or pipeline
+- `phase` — current workflow phase
+- `decisions` — key decisions made
+- `tasks` — all tasks with status, complexity, routing metadata, acceptance, verification, issues
+- `log` — complete audit trail
 
-### State Transitions
+A new AI cold-starting reads `goal + model_policy + orchestration_policy + tasks + log` to reconstruct full context.
 
-```
-Task:  todo → in_progress → ready_for_test → done
-                  │                   │
-                  ▼                   ▼
-               blocked          failed_test → in_progress (reassigned)
-
-Bug:   open → in_fix → retest → closed
-                         │
-                         ▼
-                      rejected
-```
-
-### Keeping State Aligned
-
-The Orchestrator must ensure consistency between:
-- `session.json` task entries
-- JSON task cards
-- Bug cards
-- Branch names and worktree paths
-
-## Context Compaction
-
-When the conversation grows long, the Orchestrator compacts earlier turns.
-
-### Trigger
-
-- After roughly 8 turns
-- Or when the conversation becomes repetitive or stale
-
-### Compaction Strategy
-
-1. Preserve the most recent 4 messages/actions verbatim.
-2. Summarize earlier context into `.ai-control/context/compacted.md` with:
-  - scope
-  - tools used
-  - key files
-  - recent user requests
-  - pending work
-  - current work
-  - timeline
-3. Increment `context.compaction_count` in `session.json`.
-
-### Session Resumption
-
-On resume, the Orchestrator injects the compacted summary and continues without recapping or asking the user to repeat prior context.
-
-## Parallel Execution
-
-### When to Parallelize
-
-Tasks can run in parallel when:
-- They have no dependencies on each other.
-- They modify non-overlapping file paths.
-- Any shared interfaces are defined in completed contract tasks.
-
-### Parallel Topology Example
+### Task State Transitions
 
 ```
-TASK-001 (DB schema)  ──┐
-                         ├──→ TASK-004 (API integration)
-TASK-002 (Auth module) ──┘
-                               │
-TASK-003 (UI scaffolding)      ▼
-         │              TASK-005 (E2E tests)
-         └──────────────────────┘
+todo → doing → testing → done
+         │         │
+         ▼         ▼
+      blocked    doing (fix→retest loop)
 ```
 
-- **Parallel group 1**: TASK-001, TASK-002, TASK-003 (independent)
-- **Serial after group 1**: TASK-004 (depends on TASK-001, TASK-002)
-- **Serial after all**: TASK-005 (depends on TASK-003, TASK-004)
+### Audit Log Types
 
-## Contract Tasks
-
-When multiple executor tasks share an interface, schema, or API surface:
-
-1. The Orchestrator creates a **contract task** that defines the shared artifact.
-2. The contract task is marked as a dependency for all consuming tasks.
-3. The contract executor implements only the shared definition (types, interfaces, schemas).
-4. Consumer tasks are dispatched only after the contract task is `done`.
-
-**Example:**
-
-```
-TASK-001: Define UserDTO schema (contract task)
-TASK-002: Implement user API (depends on TASK-001)
-TASK-003: Implement user UI (depends on TASK-001)
-```
+| Type | When | Key Fields |
+|------|------|------------|
+| `action` | Agent completes a step | `agent`, `action`, `detail` |
+| `plan_change` | Requirements change | `trigger`, `before`, `after`, `tasks_added/modified/removed` |
+| `iteration` | One fix→retest cycle | `iteration`, `tasks`, `issues_found`, `issues_fixed`, `detail` |
 
 ## Example Walkthrough
 
-### Scenario: "Add a search feature to the product catalog"
+### Scenario: "Add search to product catalog"
 
 **Step 1 — User invokes @Orchestrator:**
-> "Add full-text search to the product catalog. Products should be searchable by name, description, and tags."
+> "Add full-text search. Products searchable by name, description, and tags."
 
-**Step 2 — Orchestrator creates PRFAQ and dispatches Planner:**
-- Creates `.ai-control/session.json` with `run_id: "run-042"`.
-- Adds the search feature summary directly into `session.json.goal` and planning context.
-- Dispatches `runSubagent(agentName="Planner", ...)`.
+**Step 2 — Orchestrator plans and routes:**
+- Creates `session.json` with `run_id: "run-042"`, mode: `"pipeline"`.
+- Runs a read-only research wave for data model and search surface because the request spans indexing and ranking.
+- Decomposes into 4 tasks inline in `session.json`.
+- Assigns `complexity`, `execution_profile`, and `selected_models` for each task.
+- Records plan and routing rationale in `log`.
 
-**Step 3 — Planner returns task breakdown:**
+**Step 3 — Orchestrator dispatches TASK-001 (no dependencies):**
 ```
-TASK-001: Add search index schema (contract)
-TASK-002: Implement search API endpoint (depends on TASK-001)
-TASK-003: Add search UI component (depends on TASK-001)
-TASK-004: Integration tests (depends on TASK-002, TASK-003)
+runSubagent(prompt="<executor template with TASK-001 context>")
+```
+Executor implements, updates task status to `"done"`.
+
+**Step 4 — Orchestrator dispatches Tester for TASK-001:**
+```
+runSubagent(prompt="<tester template with TASK-001 context>")
+```
+Tester reviews code, runs adversarial tests, finds no issues → `"passed"`.
+
+**Step 5 — TASK-002 and TASK-003 dispatched in parallel (both depend only on TASK-001):**
+Both Executors complete. Orchestrator dispatches Testers for each, keeping TASK-003 on `flagship` review because it touches ranking logic.
+
+**Step 6 — Tester for TASK-003 finds a bug:**
+```json
+{"severity": "medium", "description": "Search results not sorted by relevance", "evidence": "..."}
 ```
 
-**Step 4 — Orchestrator creates task cards and dispatches TASK-001:**
-- Creates `.ai-control/tasks/TASK-001.md` through `TASK-004.md`.
-- Dispatches Executor for TASK-001 (no dependencies).
+**Step 7 — Orchestrator arbitrates:**
+- Records issue in TASK-003's `issues` array.
+- Records `iteration` log entry.
+- Escalates TASK-003 Executor from `balanced` to `flagship` because the issue affects ranking correctness.
+- Re-dispatches Executor for TASK-003 with the bug context.
+- After fix, re-dispatches Tester → passes.
 
-**Step 5 — TASK-001 executor completes, Orchestrator dispatches TASK-002 and TASK-003 in parallel:**
-- TASK-001 marked `done`.
-- TASK-002 and TASK-003 dispatched simultaneously (both depend only on TASK-001).
+**Step 8 — TASK-004 dispatched (all dependencies met), tested, passes.**
 
-**Step 6 — Both executors complete, Orchestrator dispatches testers:**
-- Tester for TASK-002: runs API tests → passes.
-- Tester for TASK-003: runs UI tests → finds a bug (search results not sorted).
-
-**Step 7 — Orchestrator handles the bug:**
-- Creates `BUG-001` (source: TASK-003, severity: medium).
-- Reassigns to TASK-003's executor with updated acceptance criteria.
-- Executor fixes, pushes. Tester retests → passes.
-
-**Step 8 — TASK-004 dispatched (all dependencies satisfied):**
-- Executor runs integration tests, all pass.
-- Tester verifies. Orchestrator marks all tasks `done`.
-
-**Step 9 — Orchestrator reports completion:**
-> "Run run-042 complete. 4 tasks delivered, 1 bug found and fixed. Search feature is live."
+**Step 9 — Orchestrator reports:**
+> "Run run-042 complete. 4 tasks delivered, 1 bug found and fixed."
